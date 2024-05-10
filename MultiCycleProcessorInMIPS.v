@@ -1,168 +1,159 @@
-module MultiCycleImplementationOfMIPS(input clk, reset, output [63:0] writedata, addr, output memwrite);
-	wire [63:0] readdata;
-	mips mips(clk, reset, addr, writedata, memwrite, readdata);
-	mem mem(clk, memwrite, addr, writedata, readdata);
+module MultiCycleProcessor64BitInMIPS(input CLK, RST,
+												  output [63:0] WD, ADDR,
+												  output MemWrite);
+		wire [63:0] RD;
+		mips mips(CLK, RST, ADDR, WD, MemWrite, RD);
+		mem memory(CLK, MemWrite, ADDR, WD, RD);
+endmodule
+
+module datapath(input CLK, RST, 
+					 input PCEn, IRWrite, RegWrite, 
+					 input ALUSrcA, IorD, MemToReg, RegDst, 
+					 input[1:0] ALUSrcB, 
+					 input PCSrc, 
+					 input [2:0] ALUControl, 
+					 output [5:0] OP, Funct, 
+					 output Zero, 
+					 output [63:0] ADDR, WD,
+					 input [63:0] RD);
+		
+		wire [4:0] WriteReg;
+		wire [63:0] PCNext, PC;
+		wire [63:0] Instr, Data, SrcA, SrcB;
+		wire [63:0] A;
+		wire [63:0] ALUResult, ALUOut;
+		wire [63:0] SignImm;
+		wire [63:0] SignImmsh;
+		wire [63:0] WD3, RD1, RD2;
+		
+		assign OP = Instr[31:26];
+		assign Funct = Instr[5:0];
+		
+		flopenr #(64) PCReg(CLK, RST, PCEn, PCNext, PC);
+		mux2 #(64) ADRMux(PC, ALUOut, IorD, ADDR);
+		flopenr #(64) InstrReg(CLK, RST, IRWrite, RD, Instr);
+		flopr #(64)DataReg(CLK, RST, RD, Data);
+		
+		mux2 #(5) RegDstMux(Instr[20:16], Instr[15:11], RegDst, WriteReg);
+		// Instr[20:16] corresponds to target register
+		// Instr [15:11] corresponds to source register
+		mux2 #(64) WDMux(ALUOut, Data, MemToReg, WD3);
+		regfile register_fie(CLK, RegWrite, Instr[25:21], Instr[20:16], WriteReg, WD3, RD1, RD2);
+		signext se(Instr[15:0], SignImm);
+		sl2 immsh2bits(SignImm, SignImmsh);
+		flopr #(64) AReg(CLK, RST, RD1, A);
+		flopr #(64) BReg(CLK, RST, RD2, WD);
+		mux2 #(64) SrcAMux(PC, A, ALUSrcA, SrcA);
+		mux4 #(64) SrcBMux(WD, 64'b100, SignImm, SignImmsh, ALUSrcB, SrcB);
+		ALU alu(SrcA, SrcB, ALUControl, ALUResult, Zero);
+		flopr #(64) ALUReg(CLK, RST, ALUResult, ALUOut);
+		mux2 #(64) PCMux(ALUResult, ALUOut, PCSrc, PCNext);
+endmodule
+
+module ALU(input [63:0] IN1, IN2, input[2:0] CNTRL, output reg [63:0] OUT, output Zero);
+	always @(*)
+		case(CNTRL[2:0])
+			3'b000: OUT <= IN1&IN2; // AND
+			3'b001: OUT <= IN1|IN2; // OR
+			3'b010: OUT <= IN1+IN2; // ADD
+			3'b110: OUT <= IN1-IN2; // SUB
+			3'b111: OUT <= IN1<IN2; // SLT
+			default OUT <= 0; // default to zero
+		endcase
+		assign Zero = (OUT==64'b0);
+endmodule
+
+module sl2(input [63:0] A, output [63:0] O);
+	assign O = {A[61:0], 2'b00};
+endmodule
+
+module flopenr #(parameter WIDTH = 8)
+					 (input CLK, RST,
+					  input EN,
+					  input [WIDTH-1:0] D,
+					  output reg [WIDTH-1:0] Q);
+		always@(posedge CLK, posedge RST)
+				if(RST) Q <= 0;
+				else if(EN) Q <= D; 
 endmodule
 
 
-module ALU( input [63:0] A, B, input [2:0] ALUControl, output reg [63:0] Y, output Zero);
-		always @(*)
-			case (ALUControl[2:0])
-				3'b000: Y <= A&B; // AND
-				3'b001: Y <= A|B; // OR
-				3'b010: Y <= A+B; // ADD
-				3'b110: Y <= A-B; // SUB
-				3'b111: Y <= 0;
-			endcase
-		assign Zero = (Y==32'b0);
-endmodule
- 
-
-module DataPath(input clk, reset, 
-                input pcen, IRWrite, RegWrite, 
-                input ALUSrcA, IorD, MemToReg, RegDst,
-                input [1:0] ALUSrcB, PCSrc,
-                input [2:0] AluControl, 
-                output [5:0] op, funct,
-                output zero,
-                output [63:0] addr, writedata,
-                input [63:0] readdata);
-					 
-					 wire [4:0] writereg;
-					 wire [63:0] pcnext, pc;
-					 wire [63:0] instr;
-					 wire [63:0] data, srca, srcb;
-					 wire [63:0] a;
-					 wire [63:0] aluresult, aluout;
-					 wire [63:0] signimm;
-					 wire [63:0] signimmsh;
-					 wire [63:0] wd3, rd1, rd2;
-					 
-					 assign op = instr[31:26];
-					 assign funct = instr[5:0];
-					 
-					 flopenr #(64) pcreg(clk, reset, pcen, pcnext, pc);
-					 mux2 #(64) adrmux(pc, aluout, IorD, addr);
-					 flopenr #(64) instrreg(clk, reset, IRWrite, readdata, instr);
-					 flopr #(64) datareg(clk, reset, readdata, data);
-					 
-					 mux2 #(5) regdstmux(instr[20:16], instr[15:11], RegDst, writereg);
-					 mux2 #(64) wdmux(aluout, data, MemToReg, wd3);
-					 regfile rf(clk, RegWrite, instr[25:21], instr[20:16], writereg, wd3, rd1, rd2);
-					 signext se(instr[15:0], signimm);
-					 sl2 immsh(signimm, signimmsh);
-					 
-					 flopr #(64) areg(clk, reset, rd1, a);
-					 flopr #(64) breg(clk, reset, rd2, writedata);
-					 mux2 #(64) srcamux(pc, a, ALUSrcA, srca);
-					 mux4 #(64) srcbmux(writedata, 32'b100, signimm, signimmsh, ALUSrcB, srcb);
-					 
-					 ALU alu(srca, srcb, AluControl, aluresult, zero);
-					 
-					 flopr #(64) alureg(clk, reset, aluresult, aluout);
-					 mux3 #(64) pcmux(aluresult, aluout, {pc[31:28], instr[25:0], 2'b00}, PCSrc, pcnext);
+module flopr #(parameter WIDTH = 8)
+				  (input CLK, RST,
+					input [WIDTH-1:0] D,
+					output reg [WIDTH-1:0] Q);
+		always@(posedge CLK, posedge RST)
+				if (RST) Q <= 0;
+				else		Q <= D;
 endmodule
 
-
-module flopenr #(parameter WIDTH=8)
-					 (input clk, reset, 
-					  input en,
-					  input [WIDTH-1:0] d,
-					  output reg [WIDTH-1:0] q);
-		always@(posedge clk, posedge reset)
-				if(reset) q <= 0;
-				else if (en) q <= d;
-endmodule
-
-
-module flopr #(parameter WIDTH=8)
-					(input clk, reset,
-					 input [WIDTH-1:0] d,
-					 output reg[WIDTH-1:0] q);
-		 always@(posedge clk, posedge reset)
-				if(reset) q <= 0;
-				else 	q <= d;
-endmodule
-
-
-module signext(input [15:0] a, output [63:0] y);
-		assign y = {{64{a[15]}}, a};
-endmodule
-
-module sl2(input [63:0] a, output [63:0] y);
-	assign y = {a[61:0], 2'b00};
+module signext (input [15:0] A, output [63:0] Y);
+			assign Y = {{48{A[15]}},A};
 endmodule
 
 module mux2 #(parameter WIDTH = 8)
-			(input [WIDTH-1:0] d0, d1,
-			 input s,
-			 output [WIDTH-1:0] y);
-			 assign y = s ? d1: d0;
-endmodule
-
-module mux3 #(parameter WIDTH = 8)
-				(input [WIDTH-1:0] d0, d1, d2,
-				 input [1:0] s,
-				 output [WIDTH-1:0] y);
-				assign #1 y = s[1] ? d2: (s[0] ? d1: d0);
+					(input [WIDTH-1:0] D0, D1,
+					 input S,
+					 output [WIDTH-1:0] Y);
+					 assign Y = S ? D1 :D0;
 endmodule
 
 module mux4 #(parameter WIDTH = 8)
-				(input [WIDTH-1:0] d0, d1, d2, d3,
-				 input [1:0] s,
-				 output reg [WIDTH-1:0] y);
+				(input [WIDTH-1:0] D0, D1, D2, D3,
+				 input [1:0] S,
+				 output reg [WIDTH-1:0]Y);
 			always @(*)
-				case (s)
-						2'b00: y <= d0;
-						2'b01: y <= d1;
-						2'b10: y <= d2;
-						2'b11: y <= d3;
-				endcase
+					case(S)
+							2'b00: Y <= D0;
+							2'b01: Y <= D1;
+							2'b10: Y <= D2;
+							2'b11: Y <= D3;
+					endcase
 endmodule
 
-
-module mem(input clk, we, input [63:0] a, wd, output [63:0] rd);
-	reg [63:0] RAM[63:0];
-	assign rd = RAM[a[63:2]];
-	initial 
-		begin
-				RAM[0] <= 32'h200201c2;
-				RAM[1] <= 32'h20030226;
-				RAM[2] <= 32'h20030226;
-				RAM[3] <= 32'h00432020;
-				RAM[4] <= 32'hac040014;
-		end
-	always @(posedge clk)
-			if(we)
-			RAM[a[63:2]] <= wd;
+module mem(input CLK, WE, input [63:0] A, WD, output [63:0] RD);
+		reg [63:0] RAM[255:0];
+		initial 
+				begin
+					$readmemh("/home/rajesh/intelFPGA_lite/20.1/quartus/bin/memfile.txt", RAM);
+				end
+		assign RD = RAM[A[63:2]];
+		
+		always @(posedge CLK)
+			if(WE) begin
+				RAM[A[63:2]] <= WD;
+				$writememh("/home/rajesh/intelFPGA_lite/20.1/quartus/bin/memfile.txt", RAM);
+			end
 endmodule
 
-module controller(input clk, reset, input [5:0] op, funct, input zero,
-						output pcen, memwrite, IRWrite, RegWrite, 
-						output ALUSrcA, IorD, MemToReg, RegDst,
+module controller(input CLK, RST,
+						input [5:0] OP, Funct,
+						input Zero,
+						output PCEn, MemWrite, IRWrite, RegWrite,
+						output ALUSrcA, IorD, MemtoReg, RegDst,
 						output [1:0] ALUSrcB,
-						output [1:0] PCSrc,
-						output [2:0] AluControl);
-			wire [1:0] aluop;
-			wire branch, pcwrite;
-			
-			maindec md(clk, reset, op, 
-						  pcwrite, memwrite, IRWrite, RegWrite,
-						  ALUSrcA, branch, IorD, MemToReg, RegDst,
-						  ALUSrcB, PCSrc, aluop);
-			aludec(funct, aluop, AluControl);
-			assign pcen = pcwrite | branch & zero;
+						output PCSrc,
+						output [2:0] ALUControl);
+		wire [1:0] ALUOp;
+		wire BRANCH, PCWrite;
+		maindec md(CLK, RST, OP,
+					  PCWrite, MemWrite, IRWrite, RegWrite,
+					  ALUSrcA, BRANCH, IorD, MemtoReg, RegDst,
+					  ALUSrcB, PCSrc, ALUOp);
+		aludec ad(Funct, ALUOp, ALUControl);
+		assign PCEn = PCWrite | (BRANCH & Zero);
 endmodule
 
 
-module maindec(input clk, reset,
-					input [5:0] op,
-					output PCWrite, MemWrite, IRWrite, RegWrite, 
-					output ALUSrcA, Branch, IorD, MemToReg, RegDst,
+module maindec(input CLK, RST,
+					input [5:0] OP,
+					output PCWrite, MemWrite, IRWrite, RegWrite,
+					output ALUSrcA, Branch, IorD, MemtoReg, RegDst,
 					output [1:0] ALUSrcB,
-					output [1:0] PCSrc,
+					output PCSrc,
 					output [1:0] ALUOp);
 		
+		//FSM states
 		parameter FETCH = 5'b00000;
 		parameter DECODE = 5'b00001;
 		parameter MEMADR = 5'b00010;
@@ -174,39 +165,38 @@ module maindec(input clk, reset,
 		parameter BRANCH = 5'b01000;
 		parameter ADDIEXECUTE = 5'b01001;
 		parameter ADDIWRITEBACK = 5'b01010;
-		parameter JUMP = 5'b01011;
-		
+		//MIPS Instruction Opcodes
 		parameter LW = 6'b100011;
 		parameter SW = 6'b101011;
 		parameter RTYPE = 6'b000000;
 		parameter BEQ = 6'b000100;
 		parameter ADDI = 6'b001000;
-		parameter J = 6'b000010;
+		
 		
 		reg [4:0] state, nextstate;
 		reg [16:0] controls;
 		
-		always @(posedge clk or posedge reset)
-			if (reset) state <= FETCH;
+		// state register
+		always @(posedge CLK or posedge RST)
+			if(RST) state <= FETCH;
 			else state <= nextstate;
 		
-		always @(*)
-			case (state)
+		always@(*)
+			case(state)
 					FETCH: nextstate <= DECODE;
-					DECODE: case(op)
+					DECODE: case(OP)
 							LW: nextstate <= MEMADR;
 							SW: nextstate <= MEMADR;
 							RTYPE: nextstate <= EXECUTE;
 							BEQ: nextstate <= BRANCH;
 							ADDI: nextstate <= ADDIEXECUTE;
-							J: nextstate <= JUMP;
 							default: nextstate <= FETCH;
 					endcase
-					MEMADR: case(op)
-									LW: nextstate <= MEMRD;
-									SW: nextstate <= MEMWR;
-									default: nextstate <= FETCH;
-							endcase
+					MEMADR: case(OP)
+							LW: nextstate <= MEMRD;
+							SW: nextstate <= MEMWR;
+							default: nextstate <= FETCH;
+					endcase
 					MEMRD: nextstate <= MEMWB;
 					MEMWB: nextstate <= FETCH;
 					MEMWR: nextstate <= FETCH;
@@ -215,94 +205,81 @@ module maindec(input clk, reset,
 					BRANCH: nextstate <= FETCH;
 					ADDIEXECUTE: nextstate <= ADDIWRITEBACK;
 					ADDIWRITEBACK: nextstate <= FETCH;
-					JUMP: nextstate <= FETCH;
 					default: nextstate <= FETCH;
 			endcase
-		assign {PCWrite, memwrite, IRWrite, RegWrite, ALUSrcA, Branch, IorD, MemToReg, RegDst, ALUSrcB, PCSrc, ALUOp} = controls;
-		
-		always @(*)
-			case (state)
-				FETCH: controls <= 19'b1010_00000_0100_00;
-				DECODE: controls <= 19'b0000_00000_1100_00;
-				MEMADR: controls <= 19'b0000_10000_1000_00;
-				MEMRD: controls <= 19'b0000_00100_0000_00;
-				MEMWB: controls <= 19'b0001_00010_0000_00;
-				MEMWR: controls <= 19'b0100_00100_0000_00;
-				EXECUTE: controls <= 19'b0000_10000_0000_10;
-				ALUWRITEBACK: controls <= 19'b0001_00001_0000_00;
-				BRANCH: controls <= 19'b0000_11000_0001_01;
-				ADDIEXECUTE: controls <= 19'b0000_10000_1000_00;
-				ADDIWRITEBACK: controls <= 19'b0001_00000_0000_00;
-				JUMP: controls <= 19'b1000_00000_0010_00;
-				default: controls <= 19'b0000_xxxxx_xxxx_xx;
-			endcase
-endmodule
-		
-module aludec(input [5:0] funct, input [1:0] aluop, output reg [2:0] alucontrol);
-		always@(*)
-			case(aluop)
-				3'b000: alucontrol <= 3'b010;
-				3'b001: alucontrol <= 3'b010;
-				3'b010: case(funct)
-					6'b100000: alucontrol <= 3'b010;
-					6'b100010: alucontrol <= 3'b110;
-					6'b100100: alucontrol <= 3'b000;
-					6'b100101: alucontrol <= 3'b001;
-					6'b101010: alucontrol <= 3'b111;
-					default: alucontrol <= 3'bxxx;
+			
+			assign {PCWrite, MemWrite, IRWrite, RegWrite,
+					  ALUSrcA, Branch, IorD, MemtoReg, RegDst,
+					  ALUSrcB, PCSrc, ALUOp} = controls;
+					  
+			always @(*)
+				case(state)
+						FETCH: controls <= 16'b1010_00000_01_0_00;
+						DECODE: controls <= 16'b0000_00000_11_0_00;
+						MEMADR: controls <= 16'b0000_00000_10_0_00;
+						MEMRD: controls <= 16'b0000_00100_00_0_00;
+						MEMWB: controls <= 16'b0001_00010_00_0_00;
+						MEMWR: controls <= 16'b0100_00100_00_0_00;
+						EXECUTE: controls <= 16'b0000_10000_00_0_10;
+						ALUWRITEBACK: controls <= 16'b0001_00001_00_0_00;
+						BRANCH: controls <= 16'b0000_11000_00_1_01;
+						ADDIEXECUTE: controls <= 16'b0000_100000_10_0_00;
+						ADDIWRITEBACK: controls <= 16'b0001_00000_00_0_00;
+						default: controls <= 16'b0000_xxxxx_xxxx_xx;
 				endcase
-				default: alucontrol <= 3'bxxx;
-			endcase
 endmodule
 
-module regfile(input clk, input we3, input [4:0] ra1, ra2, wa3, input [31:0] wd3, output [31:0] rd1, rd2);
-		reg [63:0] rf[31:0];
+module aludec(input [5:0] Funct, input [1:0] ALUOp, output reg [2:0] ALUControl);
+			always @(*)
+				case (ALUOp)
+					2'b00: ALUControl <= 3'b010;
+					2'b01: ALUControl <= 3'b110;
+					default: case(Funct)
+							6'b100000: ALUControl <= 3'b010;
+							6'b100010: ALUControl <= 3'b110;
+							6'b100100: ALUControl <= 3'b000;
+							6'b100101: ALUControl <= 3'b001;
+							6'b101010: ALUControl <= 3'b111;
+							default: ALUControl <= 3'bxxx;
+					endcase
+				endcase
+endmodule
+
+module regfile(input CLK,
+					input WE3,
+					input [4:0] RA1, RA2, WA3,
+					input [63:0] WD3,
+					output[63:0] RD1, RD2);
+					
+		reg [63:0] register_file[31:0];
 		
-		always @(posedge clk)
-				if(we3) rf[wa3] <= wd3;
-				assign rd1 = (ra1 !=0) ? rf[ra1] : 0;
-				assign rd2 = (ra2 !=0) ? rf[ra2] : 0;
-endmodule
-
-module mips(input clk, reset, output [63:0] addr, writedata, output memwrite, input [63:0] readdata);
-		wire zero, pcen, irwrite, regwrite, iord, memtoreg, regdst, ALUSrcA;
-		wire [1:0] ALUSrcB;
-		wire [1:0] PCSrc;
-		wire [2:0] ALUControl;
-		wire [5:0] op, funct;
-		controller c (clk, reset, op, funct, zero, pcen, memwrite, irwrite, regwrite, ALUSrcA, iord, memtoreg, regdst, ALUSrcB, PCSrc, ALUControl);
-		DataPath dp(clk, reset, pcen, irwrite, regwrite, ALUSrcA, iord, memtoreg, regdst, ALUSrcB, PCSrc, ALUControl, op, funct, zero, addr, writedata, readdata);
+		always @(posedge CLK)
+			if(WE3) register_file[WA3] <= WD3;	
+			
+			assign RD1=(RA1!= 0)?register_file[RA1]:0;
+			assign RD2=(RA2!= 0)?register_file[RA2]:0;		
 endmodule
 
 
-module testbenchv1;
-	reg clk;
-	reg reset;
-	wire [31:0] writedata, dataaddr;
-	wire memwrite;
-	
-	MultiCycleImplementationOfMIPS mcycle(clk, reset, writedata, dataaddr, memwrite);
-	initial 
-	begin
-		 reset <= 1; #22; reset <= 0;
-	end
-	
-	always
-	begin
-		clk <= 1; #5 ; clk <= 0; #5;
-	end
-	
-	always@(negedge clk)
-		begin
-				if (memwrite) begin
-						if(dataaddr == 20 & writedata === 1000) begin
-							$display("Simulation Succeeded");
-							$stop;
-						end else if (dataaddr !== 80) begin
-							$display("Failed %h %h", writedata, dataaddr);
-							$stop;
-						end
-				end
-		end
+module mips(input CLK, RST,
+				output [63:0] ADDR, WD,
+				output MemWrite,
+				input [63:0] RD);
+		 
+		 wire Zero, PCEn, IRWrite, RegWrite, ALUSrcA, IorD, MemtoReg, RegDst;
+		 wire [1:0] ALUSrcB;
+		 wire PCSrc;
+		 wire [2:0] ALUControl;
+		 wire [5:0] OP, Funct;
+		 
+		 controller c(CLK, RST, OP, Funct, Zero,
+						  PCEn, MemWrite, IRWrite, RegWrite, 
+						  ALUSrcA, IorD, MemtoReg, RegDst,
+						  ALUSrcB, PCSrc, ALUControl);
+		 datapath dp(CLK, RST,
+						 PCEn, IRWrite, RegWrite,
+						 ALUSrcA, IorD, MemtoReg, RegDst,
+						 ALUSrcB, PCSrc, ALUControl,
+						 OP, Funct, Zero,
+						 ADDR, WD, RD);
 endmodule
-
